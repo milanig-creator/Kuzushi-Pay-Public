@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../apps/api/src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PlatformRole {
+  ADMIN
+  USER
+}
+
+enum MembershipRole {
+  OWNER
+}
+
+enum StripeMode {
+  TEST
+  LIVE
+}
+
+enum StripeConnectionStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  DISCONNECTED
+}
+
+enum StripeOAuthCredentialStatus {
+  READY
+  REFRESHING
+  RECONNECT_REQUIRED
+}
+
+enum StripePublicationStatus {
+  PENDING
+  PRODUCT_CREATING
+  PRODUCT_CREATED
+  PRICE_CREATING
+  PRICE_CREATED
+}
+
+enum CheckoutAttemptStatus {
+  PENDING
+  CREATING
+  SESSION_CREATED
+}
+
+enum InitialCheckoutPaymentStatus {
+  UNPAID
+  PAID
+}
+
+enum CheckoutEventWorkStatus {
+  PENDING
+  PROCESSING
+  DONE
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  passwordHash String
+  role         PlatformRole @default(USER)
+  sessionVersion Int        @default(0)
+  memberships  Membership[]
+  oauthAttempts StripeOAuthAttempt[]
+  passwordResetTokens PasswordResetToken[]
+  mfaAuthenticator MfaAuthenticator?
+  mfaBackupCodes MfaBackupCode[]
+  mfaRecoveryGrant MfaRecoveryGrant?
+  createdAt    DateTime     @default(now())
+}
+
+model Business {
+  id          String       @id @default(uuid())
+  name        String
+  memberships Membership[]
+  stripeConnections StripeConnection[]
+  oauthAttempts StripeOAuthAttempt[]
+  productDrafts ProductDraft[]
+  storefrontProposal StorefrontProposal?
+  createdAt   DateTime     @default(now())
+}
+
+model StorefrontProposal {
+  businessId String   @id
+  origin     String
+  returnUrl  String
+  revision   String
+  verifiedAt DateTime?
+  testApprovedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model ProductDraft {
+  id          String   @id
+  businessId  String
+  name        String
+  description String
+  kind        String
+  amountCents Int
+  currency    String   @default("USD")
+  billing     String
+  interval    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  publications StripePublication[]
+
+  @@unique([id, businessId])
+  @@index([businessId, createdAt])
+}
+
+model StripePublication {
+  id              String                  @id
+  draftId         String
+  businessId      String
+  actorId         String
+  actorSessionVersion Int
+  connectionId    String
+  mode            StripeMode
+  stripeAccountId String
+  name            String
+  description     String
+  kind            String
+  amountCents     Int
+  currency        String
+  billing         String
+  interval        String?
+  status          StripePublicationStatus @default(PENDING)
+  operationId     String?
+  claimedAt       DateTime?
+  stripeProductId String?
+  stripePriceId   String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  draft           ProductDraft            @relation(fields: [draftId, businessId], references: [id, businessId], onDelete: Restrict)
+  connection      StripeConnection        @relation(fields: [connectionId, businessId, mode, stripeAccountId], references: [id, businessId, mode, stripeAccountId], onDelete: Restrict, onUpdate: Restrict)
+  checkoutOrders  CheckoutOrder[]
+
+  @@unique([draftId, mode])
+  @@unique([mode, stripeProductId])
+  @@unique([mode, stripePriceId])
+  @@index([businessId, createdAt])
+}
+
+model CheckoutOrder {
+  id                   String                       @id
+  publicationId        String
+  storefrontRevision   String?
+  storefrontRequestId  String?
+  initialPaymentStatus InitialCheckoutPaymentStatus @default(UNPAID)
+  paidQuantity         Int?
+  createdAt            DateTime                     @default(now())
+  publication          StripePublication            @relation(fields: [publicationId], references: [id], onDelete: Restrict)
+  attempt              CheckoutAttempt?
+  eventResults         StripeCheckoutEventResult[]
+
+  @@index([publicationId, createdAt])
+  @@unique([publicationId, storefrontRequestId])
+}
+
+model CheckoutAttempt {
+  id              String                @id
+  orderId         String                @unique
+  status          CheckoutAttemptStatus @default(PENDING)
+  operationId     String?
+  claimedAt       DateTime?
+  stripeSessionId String?               @unique
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  order           CheckoutOrder         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  recoveryWork    CheckoutRecoveryWork?
+}
+
+model CheckoutRecoveryWork {
+  attemptId     String                  @id
+  status        CheckoutEventWorkStatus @default(PENDING)
+  attemptCount  Int                     @default(0)
+  nextAttemptAt DateTime                @default(now())
+  leaseToken    String?
+  leaseUntil    DateTime?
+  lastError     String?
+  attempt       CheckoutAttempt         @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+}
+
+model StripeCheckoutEvent {
+  id              String           @id
+  connectionId    String
+  businessId      String
+  mode            StripeMode
+  stripeAccountId String
+  source          String
+  type            String
+  sessionId       String
+  eventCreated    BigInt
+  receivedAt      DateTime         @default(now())
+  connection      StripeConnection @relation(fields: [connectionId, businessId, mode, stripeAccountId], references: [id, businessId, mode, stripeAccountId], onDelete: Restrict, onUpdate: Restrict)
+  result          StripeCheckoutEventResult?
+  work            StripeCheckoutEventWork?
+
+  @@index([businessId, receivedAt])
+  @@index([sessionId])
+}
+
+model StripeCheckoutEventWork {
+  eventId       String                  @id
+  status        CheckoutEventWorkStatus @default(PENDING)
+  attemptCount  Int                     @default(0)
+  nextAttemptAt DateTime                @default(now())
+  leaseToken    String?
+  leaseUntil    DateTime?
+  lastError     String?
+  event         StripeCheckoutEvent     @relation(fields: [eventId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+}
+
+model StripeCheckoutEventResult {
+  eventId         String                       @id
+  orderId         String
+  observedStatus  InitialCheckoutPaymentStatus
+  processedAt     DateTime                     @default(now())
+  event           StripeCheckoutEvent          @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  order           CheckoutOrder                @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model StripeOAuthAttempt {
+  id          String    @id @default(uuid())
+  stateHash   String    @unique
+  sessionHash String
+  userId      String
+  businessId  String
+  environment String
+  expiresAt   DateTime
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model StripeConnection {
+  id              String                 @id @default(uuid())
+  businessId      String
+  mode            StripeMode
+  status          StripeConnectionStatus @default(PENDING_VERIFICATION)
+  stripeAccountId String?
+  connectProvisionedAt DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  business        Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  credential      StripeCredentialReference?
+  oauthCredential StripeOAuthCredential?
+  publications    StripePublication[]
+  checkoutEvents  StripeCheckoutEvent[]
+
+  @@unique([businessId, mode])
+  @@unique([mode, stripeAccountId])
+  @@unique([id, businessId, mode, stripeAccountId])
+}
+
+model StripeOAuthCredential {
+  connectionId String                      @id
+  secretId     String                      @unique
+  version      String
+  status       StripeOAuthCredentialStatus @default(READY)
+  operationId  String?
+  connection   StripeConnection            @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+}
+
+model StripeCredentialReference {
+  connectionId String           @id
+  secretId     String           @unique
+  version      String
+  connection   StripeConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+}
+
+model Membership {
+  userId     String
+  businessId String
+  role       MembershipRole @default(OWNER)
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@id([userId, businessId])
+}
+
+model Session {
+  sid    String   @id @db.VarChar
+  sess   Json     @db.Json
+  expire DateTime @db.Timestamp(6)
+
+  @@index([expire], map: "IDX_session_expire")
+  @@map("session")
+}
+
+model LoginRateLimit {
+  key       String   @id
+  totalHits Int
+  resetTime DateTime @db.Timestamp(3)
+
+  @@index([resetTime])
+}
+
+model AuditEvent {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  targetId   String?
+  businessId String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([businessId, createdAt])
+}
+
+model PasswordResetDelivery {
+  id            String   @id
+  payload       String
+  expiresAt     DateTime
+  nextAttemptAt DateTime @default(now())
+  leaseUntil    DateTime?
+
+  @@index([nextAttemptAt])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id             String   @id
+  tokenHash      String   @unique
+  userId         String
+  sessionVersion Int
+  expiresAt      DateTime
+  usedAt         DateTime?
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model MfaAuthenticator {
+  userId       String @id
+  secret       String
+  lastTimeStep Int
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MfaBackupCode {
+  userId   String
+  codeHash String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, codeHash])
+}
+
+model MfaKeyState {
+  id          String @id
+  fingerprint String
+}
+
+model MfaRecoveryGrant {
+  userId    String   @id
+  codeHash  String
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

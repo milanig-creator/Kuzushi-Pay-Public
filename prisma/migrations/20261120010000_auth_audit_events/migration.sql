@@ -1,0 +1,3 @@
+ALTER TABLE "AuditEvent"
+  ALTER COLUMN "actorId" DROP NOT NULL,
+  ALTER COLUMN "targetId" DROP NOT NULL;
